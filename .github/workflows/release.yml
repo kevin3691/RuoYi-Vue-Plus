@@ -67,6 +67,53 @@ jobs:
           path: ruoyi-admin/target/ruoyi-admin.jar
           if-no-files-found: error
 
+  deploy:
+    name: 上传到服务器
+    if: github.event_name == 'workflow_dispatch'
+    needs: release
+    runs-on: ubuntu-latest
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    steps:
+      - name: 下载前端构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend
+          path: artifacts/frontend
+      - name: 下载后端构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: backend
+          path: artifacts/backend
+      - name: 配置 SSH
+        env:
+          UBUNTU_SSH_KEY: ${{ secrets.UBUNTU_SSH_KEY }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$UBUNTU_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          host="$SERVER_HOST"
+          if [ "$SERVER_PORT" != 22 ]; then host="[$SERVER_HOST]:$SERVER_PORT"; fi
+          printf '%s ssh-ed25519 %s\n' "$host" 'AAAAC3NzaC1lZDI1NTE5AAAAIK5jrBooRs3uS/12yA+xzkLz/uhq6x9Dt0rOKcmVXBaN' > ~/.ssh/known_hosts
+      - name: 上传文件并备份旧版 JAR
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes -p "$SERVER_PORT" "ubuntu@$SERVER_HOST" \
+            'test -w /home/ubuntu/www/sites/plus/index && test -w /home/ubuntu/project/plus'
+          scp -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes -P "$SERVER_PORT" \
+            artifacts/frontend/frontend.tar.gz "ubuntu@$SERVER_HOST:/home/ubuntu/www/sites/plus/index/.frontend.tar.gz"
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes -p "$SERVER_PORT" "ubuntu@$SERVER_HOST" \
+            'set -eu; cd /home/ubuntu/www/sites/plus/index; tar -xzf .frontend.tar.gz; rm .frontend.tar.gz'
+          scp -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes -P "$SERVER_PORT" \
+            artifacts/backend/ruoyi-admin.jar "ubuntu@$SERVER_HOST:/home/ubuntu/project/plus/ruoyi-admin.jar.new"
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes -p "$SERVER_PORT" "ubuntu@$SERVER_HOST" \
+            'set -eu; cd /home/ubuntu/project/plus; if [ -e ruoyi-admin.jar ]; then backup="ruoyi-admin.jar.$(date +%Y%m%d%H%M%S)"; n=1; while [ -e "$backup" ]; do backup="ruoyi-admin.jar.$(date +%Y%m%d%H%M%S).$n"; n=$((n+1)); done; mv ruoyi-admin.jar "$backup"; fi; mv ruoyi-admin.jar.new ruoyi-admin.jar'
+
   release:
     name: 发布 GitHub Release
     if: github.event_name == 'workflow_dispatch'
