@@ -1,0 +1,93 @@
+name: 发布版本
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '发版标签（例如 v6.1.0）'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: 构建前端
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+      - name: 配置 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: plus-ui/package.json
+          run_install: false
+      - name: 配置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: plus-ui/pnpm-lock.yaml
+      - name: 构建前端
+        working-directory: plus-ui
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build:prod
+      - name: 打包前端资源
+        run: tar -czf frontend.tar.gz -C plus-ui/dist .
+      - name: 上传前端构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend
+          path: frontend.tar.gz
+          if-no-files-found: error
+
+  backend:
+    name: 构建后端
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+      - name: 配置 Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: 构建后端
+        run: mvn --batch-mode -Pprod -pl ruoyi-admin -am package
+      - name: 上传后端构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend
+          path: ruoyi-admin/target/ruoyi-admin.jar
+          if-no-files-found: error
+
+  release:
+    name: 发布 GitHub Release
+    needs: [frontend, backend]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 下载前端构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend
+          path: artifacts
+      - name: 下载后端构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: backend
+          path: artifacts
+      - name: 发布版本
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          gh release create "$RELEASE_TAG" artifacts/frontend.tar.gz artifacts/ruoyi-admin.jar \
+            --target "$COMMIT_SHA" --title "$RELEASE_TAG" --generate-notes --draft
+          gh release edit "$RELEASE_TAG" --draft=false
